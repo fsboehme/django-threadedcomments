@@ -1,4 +1,5 @@
 from django.db import models
+import datetime
 from django.contrib.comments.models import Comment
 from django.contrib.comments.managers import CommentManager
 from django.conf import settings
@@ -12,6 +13,7 @@ class ThreadedComment(Comment):
     parent = models.ForeignKey('self', null=True, blank=True, default=None, related_name='children', verbose_name=_('Parent'))
     last_child = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, verbose_name=_('Last child'))
     tree_path = models.TextField(_('Tree path'), editable=False, db_index=True)
+    newest_activity = models.DateTimeField(default=datetime.datetime.now())
 
     objects = CommentManager()
 
@@ -39,22 +41,31 @@ class ThreadedComment(Comment):
 
             self.parent.last_child = self
             ThreadedComment.objects.filter(pk=self.parent_id).update(last_child=self)
+            ThreadedComment.objects.filter(pk=self.parent_id).update(newest_activity=self.submit_date)
+            ThreadedComment.objects.filter(parent_id=self.parent_id).update(newest_activity=self.submit_date)
 
         self.tree_path = tree_path
         ThreadedComment.objects.filter(pk=self.pk).update(tree_path=self.tree_path)
+        ThreadedComment.objects.filter(pk=self.pk).update(newest_activity=self.submit_date)
 
     def delete(self, *args, **kwargs):
         # Fix last child on deletion.
         if self.parent_id:
             try:
-                prev_child_id = ThreadedComment.objects \
+                prev_child = ThreadedComment.objects \
                                 .filter(parent=self.parent_id) \
                                 .exclude(pk=self.pk) \
-                                .order_by('-submit_date') \
-                                .values_list('pk', flat=True)[0]
+                                .order_by('-submit_date')[0]
             except IndexError:
-                prev_child_id = None
-            ThreadedComment.objects.filter(pk=self.parent_id).update(last_child=prev_child_id)
+                prev_child = None
+            if prev_child:
+                ThreadedComment.objects.filter(pk=self.parent_id).update(last_child=prev_child.pk)
+                ThreadedComment.objects.filter(pk=self.parent_id).update(newest_activity=prev_child.submit_date)
+                ThreadedComment.objects.filter(parent_id=self.parent_id).update(newest_activity=prev_child.submit_date)
+            else:
+                ThreadedComment.objects.filter(pk=self.parent_id).update(last_child=None)
+                ThreadedComment.objects.filter(pk=self.parent_id).update(newest_activity=self.parent.submit_date)
+                
         super(ThreadedComment, self).delete(*args, **kwargs)
 
     class Meta(object):
